@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "685769375252",
+    "firebase_url": "https://meshup1234-default-rtdb.firebaseio.com",
+    "project_id": "meshup1234",
+    "storage_bucket": "meshup1234.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:685769375252:android:5061392222553b0166f101",
+        "android_client_info": {
+          "package_name": "com.example.meshup"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBWdn-N6vD4vthq3Gaz0QS3TlNyuMZYqFI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
