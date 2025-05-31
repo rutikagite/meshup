@@ -9,9 +9,13 @@
 
 
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
     <uses-permission android:name="android.permission.BLUETOOTH"/>
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"/>
+
+    <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
 
     <application
         android:allowBackup="true"
@@ -53,6 +57,7 @@
             android:name=".ProfileSetupActivity"
             android:exported="false"
             android:theme="@style/Theme.MeshUp.NoActionBar" />
+
 
     </application>
 

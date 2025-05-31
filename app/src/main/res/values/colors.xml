@@ -1,5 +1,41 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Primary colors -->
+    <color name="primary">#2196F3</color>
+    <color name="primary_dark">#1976D2</color>
+    <color name="primary_light">#BBDEFB</color>
+    <color name="accent">#FF4081</color>
+
+    <!-- Status colors -->
+    <color name="status_online">#4CAF50</color>
+    <color name="status_offline">#9E9E9E</color>
+
+    <!-- Text colors -->
+    <color name="text_primary">#212121</color>
+    <color name="text_secondary">#757575</color>
+    <color name="text_hint">#9E9E9E</color>
+    <color name="text_white">#FFFFFF</color>
+
+    <!-- Background colors -->
+    <color name="background_primary">#FFFFFF</color>
+    <color name="background_secondary">#FAFAFA</color>
+    <color name="item_background">#FFFFFF</color>
+    <color name="item_selected">#E3F2FD</color>
+
+    <!-- Message colors -->
+    <color name="message_sent_bg">#2196F3</color>
+    <color name="message_received_bg">#E0E0E0</color>
+
+    <color name="message_received_sender">#FF333333</color>
+    <color name="message_received_text">#FF000000</color>
+    <color name="message_received_time">#FF666666</color>
+
+    <color name="message_sent_text">#FFFFFFFF</color>
+    <color name="message_sent_time">#FFE0E0E0</color>
+
+
+    <!-- Divider -->
+    <color name="divider">#E0E0E0</color>
     <color name="purple_200">#FFBB86FC</color>
     <color name="purple_500">#FF6200EE</color>
     <color name="purple_700">#FF3700B3</color>
@@ -7,4 +43,9 @@
     <color name="teal_700">#FF018786</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+    <color name="unread_message_background">#FFE8E8</color> <!-- light red or your choice -->
+    <color name="cardview_light_background">#FFFFFF</color> <!-- standard card background -->
+    <color name="design_default_color_primary_light">#BBDEFB</color> <!-- Light blue -->
+    <color name="design_default_color_primary_dark">#0D47A1</color> <!-- Dark blue -->
+    <color name="design_default_color_primary">#2196F3</color> <!-- Primary blue -->
 </resources>
