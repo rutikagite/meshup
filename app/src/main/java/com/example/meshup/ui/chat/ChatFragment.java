@@ -108,33 +108,52 @@ public class ChatFragment extends Fragment implements
     }
 
     @Override
-    public void onResume() {
-        super.onResume();
-        if (connectionManager != null) {
-            connectionManager.setConnectionListener(this);
-        }
+    public void onDestroy() {
+        super.onDestroy();
+        stopListeningForMessages();
         if (firebaseDatabase != null) {
-            firebaseDatabase.setUserOnline();
+            firebaseDatabase.removeListeners();
         }
-        refreshConnectedDevices();
     }
 
+    // Enhanced onPause to stop listening temporarily
     @Override
     public void onPause() {
         super.onPause();
         if (firebaseDatabase != null) {
             firebaseDatabase.setUserOffline();
         }
+        // Don't stop listening here if you want to receive messages in background
+        // stopListeningForMessages();
     }
 
+    // Enhanced onResume to restart listening
     @Override
-    public void onDestroy() {
-        super.onDestroy();
-        if (firebaseDatabase != null) {
-            firebaseDatabase.removeListeners();
-        }
-    }
+    public void onResume() {
+        super.onResume();
 
+        // Ensure connection manager is properly set up
+        if (chatFragmentListener != null) {
+            connectionManager = chatFragmentListener.getConnectionManager();
+            if (connectionManager != null) {
+                connectionManager.setConnectionListener(this);
+            }
+        }
+
+        if (firebaseDatabase != null) {
+            firebaseDatabase.setUserOnline();
+        }
+
+        // CRITICAL: Always restart listening for ALL device messages, not just current chat
+        if (firebaseDatabase != null && firebaseDatabase.isUserAuthenticated()) {
+            // Listen for messages from all connected devices
+            for (ConnectedDevice device : connectedDevicesList) {
+                firebaseDatabase.startListeningForMessages(device.getDeviceAddress(), this);
+            }
+        }
+
+        refreshConnectedDevices();
+    }
     private void initializeViews(View view) {
         recyclerViewConnectedDevices = view.findViewById(R.id.recyclerView_connected_devices);
         recyclerViewChatMessages = view.findViewById(R.id.recyclerView_chat_messages);
@@ -142,6 +161,25 @@ public class ChatFragment extends Fragment implements
         buttonSendMessage = view.findViewById(R.id.button_send_message);
         textViewNoDevices = view.findViewById(R.id.textView_no_devices);
         textViewChatWith = view.findViewById(R.id.textView_chat_with);
+    }
+
+    private void updateConnectedDeviceInfo(BluetoothDevice device, String senderName) {
+        ConnectedDevice connectedDevice = findConnectedDevice(device.getAddress());
+        if (connectedDevice != null && !connectedDevice.getUsername().equals(senderName)) {
+            connectedDevice.setUsername(senderName);
+            connectedDevice.setLastSeen(System.currentTimeMillis());
+            connectedDevice.setOnline(true);
+
+            int index = connectedDevicesList.indexOf(connectedDevice);
+            if (index != -1) {
+                connectedDevicesAdapter.notifyItemChanged(index);
+            }
+
+            // Update in Firebase
+            if (firebaseDatabase != null && firebaseDatabase.isUserAuthenticated()) {
+                firebaseDatabase.saveConnectedDevice(connectedDevice);
+            }
+        }
     }
 
     // Add this method to your ChatFragment class, alongside the other BluetoothConnectionListener methods
@@ -281,9 +319,37 @@ public class ChatFragment extends Fragment implements
 
     private void loadConnectedDevices() {
         if (firebaseDatabase != null && firebaseDatabase.isUserAuthenticated()) {
-            firebaseDatabase.loadConnectedDevices(this);
+            firebaseDatabase.loadConnectedDevices(new FirebaseChatDatabase.ConnectedDevicesListener() {
+                @Override
+                public void onDevicesUpdated(List<ConnectedDevice> devices) {
+                    mainHandler.post(() -> {
+                        connectedDevicesList.clear();
+                        connectedDevicesList.addAll(devices);
+                        connectedDevicesAdapter.notifyDataSetChanged();
+                        updateDevicesVisibility();
+
+                        // CRITICAL: Set up message listeners for all devices
+                        for (ConnectedDevice device : devices) {
+                            firebaseDatabase.startListeningForMessages(device.getDeviceAddress(), ChatFragment.this);
+                        }
+                    });
+                }
+
+                @Override
+                public void onDeviceStatusChanged(ConnectedDevice device) {
+                    mainHandler.post(() -> {
+                        ConnectedDevice existingDevice = findConnectedDevice(device.getDeviceAddress());
+                        if (existingDevice != null) {
+                            int index = connectedDevicesList.indexOf(existingDevice);
+                            if (index != -1) {
+                                connectedDevicesList.set(index, device);
+                                connectedDevicesAdapter.notifyItemChanged(index);
+                            }
+                        }
+                    });
+                }
+            });
         } else {
-            // Fallback to SharedPreferences if Firebase is not available
             loadConnectedDevicesFromPrefs();
         }
         updateDevicesVisibility();
@@ -366,11 +432,14 @@ public class ChatFragment extends Fragment implements
     }
 
     private void onDeviceSelected(ConnectedDevice device) {
+        // Stop listening to previous chat messages
+        stopListeningForMessages();
+
         currentChatDevice = device;
         textViewChatWith.setText("Chat with " + device.getUsername());
         textViewChatWith.setVisibility(View.VISIBLE);
 
-        // Load chat history for this device
+        // Load chat history for this specific device
         loadChatHistory(device.getDeviceAddress());
 
         // Enable message input
@@ -445,16 +514,16 @@ public class ChatFragment extends Fragment implements
     }
 
     public void onMessageReceived(BluetoothDevice device, String message) {
+        Log.d(TAG, "PUBLIC onMessageReceived called - Device: " + device.getAddress() + ", Message: " + message);
+
         if (mainHandler != null) {
             mainHandler.post(() -> {
-                Log.d(TAG, "Public onMessageReceived called with message: " + message + " from " + device.getAddress());
                 processReceivedMessage(device, message);
             });
         } else {
-            // Fallback if mainHandler is not initialized
+            // Fallback
             if (getActivity() != null) {
                 getActivity().runOnUiThread(() -> {
-                    Log.d(TAG, "Fallback: Processing received message on UI thread");
                     processReceivedMessage(device, message);
                 });
             }
@@ -488,25 +557,45 @@ public class ChatFragment extends Fragment implements
     @Override
     public void onMessageReceived(ChatMessage message) {
         mainHandler.post(() -> {
-            if (currentChatDevice != null &&
-                    message.getDeviceAddress().equals(currentChatDevice.getDeviceAddress())) {
+            Log.d(TAG, "Firebase message received: " + message.getContent() + " from " + message.getSenderName());
 
-                // Check if message already exists to avoid duplicates
-                boolean messageExists = false;
-                for (ChatMessage existingMessage : chatMessagesList) {
-                    if (existingMessage.getId().equals(message.getId())) {
-                        messageExists = true;
-                        break;
-                    }
-                }
-
-                if (!messageExists) {
-                    chatMessagesList.add(message);
-                    chatMessagesAdapter.notifyItemInserted(chatMessagesList.size() - 1);
-                    recyclerViewChatMessages.scrollToPosition(chatMessagesList.size() - 1);
+            // Check if message already exists to avoid duplicates
+            boolean messageExists = false;
+            for (ChatMessage existingMessage : chatMessagesList) {
+                if (existingMessage.getId().equals(message.getId())) {
+                    messageExists = true;
+                    break;
                 }
             }
+
+            // If this message is for the current chat device, display it
+            if (currentChatDevice != null &&
+                    message.getDeviceAddress().equals(currentChatDevice.getDeviceAddress()) &&
+                    !messageExists) {
+
+                chatMessagesList.add(message);
+                chatMessagesAdapter.notifyItemInserted(chatMessagesList.size() - 1);
+                recyclerViewChatMessages.scrollToPosition(chatMessagesList.size() - 1);
+                Log.d(TAG, "Displayed Firebase message in current chat");
+            }
+
+            // Update device status regardless of current chat
+            updateDeviceWithNewMessage(message.getDeviceAddress());
         });
+    }
+
+    // New method to update device status when new message arrives
+    private void updateDeviceWithNewMessage(String deviceAddress) {
+        ConnectedDevice device = findConnectedDevice(deviceAddress);
+        if (device != null) {
+            device.setLastSeen(System.currentTimeMillis());
+            device.setOnline(true); // Mark as online since they just sent a message
+
+            int index = connectedDevicesList.indexOf(device);
+            if (index != -1) {
+                connectedDevicesAdapter.notifyItemChanged(index);
+            }
+        }
     }
 
     @Override
@@ -677,7 +766,7 @@ public class ChatFragment extends Fragment implements
                 // Handle text message
                 String messageContent = parts[3];
 
-                // Create unique message ID based on content and timestamp to avoid duplicates
+                // Create unique message ID
                 String messageId = generateUniqueMessageId(senderId, messageContent, System.currentTimeMillis());
 
                 ChatMessage chatMessage = new ChatMessage(
@@ -693,7 +782,10 @@ public class ChatFragment extends Fragment implements
 
                 Log.d(TAG, "Processing received message: " + messageContent + " from " + senderName);
 
-                // CRITICAL: Always save to Firebase first for persistence
+                // CRITICAL: Display message immediately on receiver's screen
+                displayReceivedMessage(chatMessage, device.getAddress());
+
+                // Save to Firebase for persistence - but don't wait for it
                 if (firebaseDatabase != null && firebaseDatabase.isUserAuthenticated()) {
                     firebaseDatabase.sendMessage(chatMessage, new FirebaseChatDatabase.ChatMessageListener() {
                         @Override
@@ -713,41 +805,53 @@ public class ChatFragment extends Fragment implements
                     });
                 }
 
-                // Display message immediately if this device is currently selected for chat
-                if (currentChatDevice != null &&
-                        currentChatDevice.getDeviceAddress().equals(device.getAddress())) {
-
-                    // Check if message already exists to avoid duplicates
-                    boolean messageExists = chatMessagesList.stream()
-                            .anyMatch(msg -> msg.getId().equals(messageId) ||
-                                    (msg.getContent().equals(messageContent) &&
-                                            msg.getSenderId().equals(senderId) &&
-                                            Math.abs(msg.getTimestamp() - chatMessage.getTimestamp()) < 1000));
-
-                    if (!messageExists) {
-                        chatMessagesList.add(chatMessage);
-                        chatMessagesAdapter.notifyItemInserted(chatMessagesList.size() - 1);
-                        recyclerViewChatMessages.scrollToPosition(chatMessagesList.size() - 1);
-                        Log.d(TAG, "Added received message to current chat display");
-                    } else {
-                        Log.d(TAG, "Message already exists in current chat, skipping duplicate");
-                    }
-                }
-
-                // Update connected device info if needed
-                ConnectedDevice connectedDevice = findConnectedDevice(device.getAddress());
-                if (connectedDevice != null && !connectedDevice.getUsername().equals(senderName)) {
-                    connectedDevice.setUsername(senderName);
-                    int index = connectedDevicesList.indexOf(connectedDevice);
-                    if (index != -1) {
-                        connectedDevicesAdapter.notifyItemChanged(index);
-                    }
-                }
+                // Update connected device info
+                updateConnectedDeviceInfo(device, senderName);
             }
         } catch (Exception e) {
             Log.e(TAG, "Error processing received message: " + receivedMessage, e);
         }
     }
+
+    private void displayReceivedMessage(ChatMessage chatMessage, String deviceAddress) {
+        // ALWAYS display the message if it's from any connected device
+        // Not just the currently selected chat device
+
+        // First, check if message already exists to avoid duplicates
+        boolean messageExists = chatMessagesList.stream()
+                .anyMatch(msg -> msg.getId().equals(chatMessage.getId()) ||
+                        (msg.getContent().equals(chatMessage.getContent()) &&
+                                msg.getSenderId().equals(chatMessage.getSenderId()) &&
+                                Math.abs(msg.getTimestamp() - chatMessage.getTimestamp()) < 2000));
+
+        if (!messageExists) {
+            // If this device is currently selected for chat, show immediately
+            if (currentChatDevice != null && currentChatDevice.getDeviceAddress().equals(deviceAddress)) {
+                chatMessagesList.add(chatMessage);
+                chatMessagesAdapter.notifyItemInserted(chatMessagesList.size() - 1);
+                recyclerViewChatMessages.scrollToPosition(chatMessagesList.size() - 1);
+                Log.d(TAG, "Added received message to current chat display");
+            } else {
+                // Message is from a different device - update that device's status
+                // to show there's a new message waiting
+                updateDeviceWithNewMessage(deviceAddress);
+                Log.d(TAG, "Message received from non-active chat device: " + deviceAddress);
+            }
+        } else {
+            Log.d(TAG, "Message already exists, skipping duplicate");
+        }
+    }
+
+    // New method to broadcast new messages to Firebase listeners
+    private void broadcastNewMessage(ChatMessage message) {
+        // This method ensures that when a message is saved to Firebase,
+        // all devices listening to that chat will be notified
+        if (firebaseDatabase != null && firebaseDatabase.isUserAuthenticated()) {
+            // Trigger a notification in Firebase that will cause other devices to reload messages
+            firebaseDatabase.notifyNewMessage(message.getDeviceAddress(), message);
+        }
+    }
+
 
     // Helper method to generate unique message IDs
     private String generateUniqueMessageId(String senderId, String content, long timestamp) {
@@ -761,9 +865,20 @@ public class ChatFragment extends Fragment implements
 
         if (firebaseDatabase != null && firebaseDatabase.isUserAuthenticated()) {
             Log.d(TAG, "Loading chat history for device: " + deviceAddress);
+
+            // Load existing messages
             firebaseDatabase.loadChatMessages(deviceAddress, this);
+
+            // IMPORTANT: Start listening for new messages in real-time
+            firebaseDatabase.startListeningForMessages(deviceAddress, this);
         } else {
             Log.w(TAG, "Firebase database not available or user not authenticated");
+        }
+    }
+
+    private void stopListeningForMessages() {
+        if (firebaseDatabase != null && currentChatDevice != null) {
+            firebaseDatabase.stopListeningForMessages(currentChatDevice.getDeviceAddress());
         }
     }
 

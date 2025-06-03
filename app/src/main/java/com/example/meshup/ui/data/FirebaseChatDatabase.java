@@ -38,6 +38,7 @@ public class FirebaseChatDatabase {
     private ChatMessageListener messageListener;
     private ConnectedDevicesListener devicesListener;
     private UserProfileListener userProfileListener;
+    private Map<String, ValueEventListener> messageListeners = new HashMap<>();
 
     public interface ChatMessageListener {
         void onMessageReceived(ChatMessage message);
@@ -68,6 +69,11 @@ public class FirebaseChatDatabase {
         if (currentUser != null) {
             currentUserId = currentUser.getUid();
         }
+    }
+
+    // Helper method to get current user
+    private FirebaseUser getCurrentUser() {
+        return auth.getCurrentUser();
     }
 
     // User Profile Management
@@ -121,42 +127,169 @@ public class FirebaseChatDatabase {
         }
     }
 
+    public void startListeningForMessages(String deviceAddress, ChatMessageListener listener) {
+        FirebaseUser currentUser = getCurrentUser();
+        if (currentUser == null) return;
+
+        String chatPath = "chats/" + currentUser.getUid() + "/" + deviceAddress + "/messages";
+        DatabaseReference messagesRef = database.getReference(chatPath);
+
+        // Remove existing listener for this device if any
+        stopListeningForMessages(deviceAddress);
+
+        ValueEventListener messageListener = new ValueEventListener() {
+            @Override
+            public void onDataChange(@NonNull DataSnapshot snapshot) {
+                List<ChatMessage> messages = new ArrayList<>();
+                for (DataSnapshot messageSnapshot : snapshot.getChildren()) {
+                    try {
+                        ChatMessage message = messageSnapshot.getValue(ChatMessage.class);
+                        if (message != null) {
+                            messages.add(message);
+                        }
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error parsing message", e);
+                    }
+                }
+
+                // Sort messages by timestamp
+                messages.sort((m1, m2) -> Long.compare(m1.getTimestamp(), m2.getTimestamp()));
+
+                if (listener != null) {
+                    listener.onMessagesLoaded(messages);
+                }
+            }
+
+            @Override
+            public void onCancelled(@NonNull DatabaseError error) {
+                Log.e(TAG, "Failed to listen for messages: " + error.getMessage());
+            }
+        };
+
+        messagesRef.addValueEventListener(messageListener);
+        messageListeners.put(deviceAddress, messageListener);
+
+        Log.d(TAG, "Started listening for messages from device: " + deviceAddress);
+    }
+
+    // Method to stop listening for messages from a specific device
+    public void stopListeningForMessages(String deviceAddress) {
+        ValueEventListener listener = messageListeners.get(deviceAddress);
+        FirebaseUser currentUser = getCurrentUser();
+        if (listener != null && currentUser != null) {
+            String chatPath = "chats/" + currentUser.getUid() + "/" + deviceAddress + "/messages";
+            DatabaseReference messagesRef = database.getReference(chatPath);
+            messagesRef.removeEventListener(listener);
+            messageListeners.remove(deviceAddress);
+            Log.d(TAG, "Stopped listening for messages from device: " + deviceAddress);
+        }
+    }
+
+    // Method to notify about new messages (triggers real-time updates)
+    public void notifyNewMessage(String deviceAddress, ChatMessage message) {
+        FirebaseUser currentUser = getCurrentUser();
+        if (currentUser == null) return;
+
+        // Update a "last_message" field that triggers listeners on other devices
+        String chatPath = "chats/" + currentUser.getUid() + "/" + deviceAddress;
+        DatabaseReference chatRef = database.getReference(chatPath);
+
+        Map<String, Object> updates = new HashMap<>();
+        updates.put("last_message_time", message.getTimestamp());
+        updates.put("last_message_content", message.getContent());
+        updates.put("last_message_sender", message.getSenderName());
+
+        chatRef.updateChildren(updates)
+                .addOnSuccessListener(aVoid -> Log.d(TAG, "New message notification sent"))
+                .addOnFailureListener(e -> Log.e(TAG, "Failed to send new message notification", e));
+    }
+
     // Chat Message Management
     public void sendMessage(ChatMessage message, ChatMessageListener listener) {
-        if (currentUserId == null) {
+        FirebaseUser currentUser = getCurrentUser();
+        if (currentUser == null) {
             if (listener != null) {
                 listener.onMessageSent(false, "User not authenticated");
             }
             return;
         }
 
-        // Create chat room ID (combination of user IDs)
-        String chatRoomId = createChatRoomId(currentUserId, message.getDeviceAddress());
+        String messageId = message.getId();
+        String deviceAddress = message.getDeviceAddress();
 
-        // Save message to Messages node
-        String messageId = messagesRef.child(chatRoomId).push().getKey();
-        if (messageId != null) {
-            message.setId(messageId);
+        // Save message for sender
+        String senderChatPath = "chats/" + currentUser.getUid() + "/" + deviceAddress + "/messages/" + messageId;
+        DatabaseReference senderMessageRef = database.getReference(senderChatPath);
 
-            messagesRef.child(chatRoomId).child(messageId)
-                    .setValue(message)
-                    .addOnSuccessListener(unused -> {
-                        Log.d(TAG, "Message sent successfully");
+        senderMessageRef.setValue(message)
+                .addOnSuccessListener(aVoid -> {
+                    Log.d(TAG, "Message saved for sender");
 
-                        // Update chat room's last message
-                        updateChatRoom(chatRoomId, message);
+                    // Now save message for receiver (if we can identify the receiver)
+                    saveMessageForReceiver(message, listener);
 
+                    if (listener != null) {
+                        listener.onMessageSent(true, null);
+                    }
+                })
+                .addOnFailureListener(e -> {
+                    Log.e(TAG, "Failed to save message for sender", e);
+                    if (listener != null) {
+                        listener.onMessageSent(false, e.getMessage());
+                    }
+                });
+    }
+
+    // Method to save message for receiver
+    private void saveMessageForReceiver(ChatMessage message, ChatMessageListener listener) {
+        FirebaseUser currentUser = getCurrentUser();
+        if (currentUser == null) return;
+
+        // You'll need to implement a way to identify the receiver's user ID
+        // This could be done by storing device-to-user mappings when devices connect
+
+        String receiverUserId = getReceiverUserId(message.getDeviceAddress());
+        if (receiverUserId != null && !receiverUserId.equals(currentUser.getUid())) {
+
+            // Create a message from receiver's perspective
+            ChatMessage receiverMessage = new ChatMessage(
+                    message.getId(),
+                    message.getSenderId(),
+                    message.getSenderName(),
+                    getCurrentUserDeviceAddress(), // Your device address from receiver's perspective
+                    message.getContent(),
+                    message.getMessageType(), // Using getMessageType() instead of getType()
+                    message.getTimestamp(),
+                    true // This is received for the receiver
+            );
+
+            String receiverChatPath = "chats/" + receiverUserId + "/" + getCurrentUserDeviceAddress() + "/messages/" + message.getId();
+            DatabaseReference receiverMessageRef = database.getReference(receiverChatPath);
+
+            receiverMessageRef.setValue(receiverMessage)
+                    .addOnSuccessListener(aVoid -> {
+                        Log.d(TAG, "Message saved for receiver");
+                        // Trigger the listener callback for the receiver
                         if (listener != null) {
-                            listener.onMessageSent(true, null);
+                            listener.onMessageReceived(receiverMessage);
                         }
                     })
-                    .addOnFailureListener(e -> {
-                        Log.e(TAG, "Failed to send message", e);
-                        if (listener != null) {
-                            listener.onMessageSent(false, e.getMessage());
-                        }
-                    });
+                    .addOnFailureListener(e -> Log.e(TAG, "Failed to save message for receiver", e));
         }
+    }
+
+    // Helper method to get receiver's user ID from device address
+    private String getReceiverUserId(String deviceAddress) {
+        // You'll need to implement this based on how you store device-to-user mappings
+        // For now, return null - you'll need to store this mapping when devices connect
+        return null;
+    }
+
+    // Helper method to get current user's device address
+    private String getCurrentUserDeviceAddress() {
+        // Return your device's Bluetooth address
+        // You'll need to pass this from the ChatFragment
+        return null;
     }
 
     public void loadChatMessages(String deviceAddress, ChatMessageListener listener) {
@@ -348,6 +481,17 @@ public class FirebaseChatDatabase {
     public void removeListeners() {
         // Note: Listeners are stored as references and would need proper cleanup
         // This is a simplified version
+        for (Map.Entry<String, ValueEventListener> entry : messageListeners.entrySet()) {
+            String deviceAddress = entry.getKey();
+            ValueEventListener listener = entry.getValue();
+            FirebaseUser currentUser = getCurrentUser();
+            if (currentUser != null) {
+                String chatPath = "chats/" + currentUser.getUid() + "/" + deviceAddress + "/messages";
+                DatabaseReference messagesRef = database.getReference(chatPath);
+                messagesRef.removeEventListener(listener);
+            }
+        }
+        messageListeners.clear();
         Log.d(TAG, "Removing listeners");
     }
 
